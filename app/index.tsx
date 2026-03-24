@@ -1,7 +1,6 @@
+import React, { useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ThemedText, ThemedView } from '@/components/Themed';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -11,14 +10,13 @@ import {
   StyleSheet,
   TextInput,
   View,
+  useColorScheme,
 } from 'react-native';
 
 type CategoryKey = 'length' | 'weight' | 'temperature' | 'volume' | 'currency';
 
-type UnitOption = {
-  label: string;
-  value: string;
-};
+type LinearUnit = { toBase: number };
+type TempUnit = { toKelvinA: number; toKelvinB: number };
 
 type FavoriteItem = {
   id: string;
@@ -37,18 +35,11 @@ type RecentItem = {
   createdAt: string;
 };
 
-type LinearUnit = {
-  toBase: number;
-};
-
-type TempUnit = {
-  toKelvinA: number;
-  toKelvinB: number;
-};
-
+const ACCENT = '#0A84FF';
 const FAVORITES_KEY = '@Convertly_favorites';
 const RECENT_KEY = '@Convertly_recent';
-const ACCENT = '#007AFF';
+
+const CATEGORIES: CategoryKey[] = ['length', 'weight', 'temperature', 'volume', 'currency'];
 
 const CATEGORY_LABELS: Record<CategoryKey, string> = {
   length: 'Length',
@@ -58,63 +49,64 @@ const CATEGORY_LABELS: Record<CategoryKey, string> = {
   currency: 'Currency',
 };
 
+// 15 common length units (base: meter)
 const LENGTH_UNITS: Record<string, LinearUnit> = {
+  mm: { toBase: 0.001 },
+  cm: { toBase: 0.01 },
   m: { toBase: 1 },
   km: { toBase: 1000 },
-  cm: { toBase: 0.01 },
-  mm: { toBase: 0.001 },
+  in: { toBase: 0.0254 },
+  ft: { toBase: 0.3048 },
+  yd: { toBase: 0.9144 },
+  mi: { toBase: 1609.344 },
+  nmi: { toBase: 1852 },
   um: { toBase: 0.000001 },
   nm: { toBase: 0.000000001 },
-  mi: { toBase: 1609.344 },
-  yd: { toBase: 0.9144 },
-  ft: { toBase: 0.3048 },
-  in: { toBase: 0.0254 },
-  nmi: { toBase: 1852 },
   fur: { toBase: 201.168 },
   chain: { toBase: 20.1168 },
   rod: { toBase: 5.0292 },
-  mil: { toBase: 0.0000254 },
   au: { toBase: 149_597_870_700 },
 };
 
+// 15 common weight/mass units (base: kilogram)
 const WEIGHT_UNITS: Record<string, LinearUnit> = {
-  kg: { toBase: 1 },
-  g: { toBase: 0.001 },
   mg: { toBase: 0.000001 },
-  ug: { toBase: 0.000000001 },
-  lb: { toBase: 0.45359237 },
+  g: { toBase: 0.001 },
+  kg: { toBase: 1 },
+  tonne: { toBase: 1000 },
   oz: { toBase: 0.028349523125 },
-  ton_us: { toBase: 907.18474 },
-  ton_metric: { toBase: 1000 },
-  ton_uk: { toBase: 1016.0469088 },
+  lb: { toBase: 0.45359237 },
   st: { toBase: 6.35029318 },
+  ton_us: { toBase: 907.18474 },
+  ton_uk: { toBase: 1016.0469088 },
   ct: { toBase: 0.0002 },
   grain: { toBase: 0.00006479891 },
   dwt: { toBase: 0.00155517384 },
   slug: { toBase: 14.59390294 },
-  amu: { toBase: 1.6605390666e-27 },
   q: { toBase: 100 },
+  amu: { toBase: 1.6605390666e-27 },
 };
 
+// 15 common volume units (base: liter)
 const VOLUME_UNITS: Record<string, LinearUnit> = {
-  l: { toBase: 1 },
   ml: { toBase: 0.001 },
+  l: { toBase: 1 },
   m3: { toBase: 1000 },
-  cm3: { toBase: 0.001 },
-  mm3: { toBase: 0.000001 },
+  tsp_us: { toBase: 0.00492892159375 },
+  tbsp_us: { toBase: 0.01478676478125 },
+  floz_us: { toBase: 0.0295735295625 },
+  cup_us: { toBase: 0.2365882365 },
+  pt_us: { toBase: 0.473176473 },
+  qt_us: { toBase: 0.946352946 },
+  gal_us: { toBase: 3.785411784 },
   in3: { toBase: 0.016387064 },
   ft3: { toBase: 28.316846592 },
   yd3: { toBase: 764.554857984 },
-  gal_us: { toBase: 3.785411784 },
-  qt_us: { toBase: 0.946352946 },
-  pt_us: { toBase: 0.473176473 },
-  cup_us: { toBase: 0.2365882365 },
-  floz_us: { toBase: 0.0295735295625 },
-  tbsp_us: { toBase: 0.01478676478125 },
-  tsp_us: { toBase: 0.00492892159375 },
   bbl_us: { toBase: 158.987294928 },
+  cm3: { toBase: 0.001 },
 };
 
+// 8 common temperature scales (via Kelvin linear transforms)
 const TEMPERATURE_UNITS: Record<string, TempUnit> = {
   C: { toKelvinA: 1, toKelvinB: 273.15 },
   F: { toKelvinA: 5 / 9, toKelvinB: 255.3722222222222 },
@@ -124,15 +116,9 @@ const TEMPERATURE_UNITS: Record<string, TempUnit> = {
   De: { toKelvinA: -2 / 3, toKelvinB: 373.15 },
   N: { toKelvinA: 100 / 33, toKelvinB: 273.15 },
   Ro: { toKelvinA: 40 / 21, toKelvinB: 258.8642857142857 },
-  Cx10: { toKelvinA: 0.1, toKelvinB: 273.15 },
-  Cx100: { toKelvinA: 0.01, toKelvinB: 273.15 },
-  Fx10: { toKelvinA: 1 / 18, toKelvinB: 255.3722222222222 },
-  Fx100: { toKelvinA: 1 / 180, toKelvinB: 255.3722222222222 },
-  Kx10: { toKelvinA: 0.1, toKelvinB: 0 },
-  Kx100: { toKelvinA: 0.01, toKelvinB: 0 },
-  Rx10: { toKelvinA: 1 / 18, toKelvinB: 0 },
 };
 
+// ~25 hard-coded currency rates (relative to USD) for offline usage.
 const CURRENCY_TO_USD: Record<string, number> = {
   USD: 1,
   EUR: 0.92,
@@ -151,8 +137,8 @@ const CURRENCY_TO_USD: Record<string, number> = {
   INR: 83.1,
   KRW: 1334,
   ZAR: 18.6,
-  MXN: 17.0,
-  BRL: 5.0,
+  MXN: 17,
+  BRL: 5,
   AED: 3.6725,
   SAR: 3.75,
   TRY: 32.1,
@@ -163,40 +149,38 @@ const CURRENCY_TO_USD: Record<string, number> = {
 
 const UNIT_LABELS: Record<CategoryKey, Record<string, string>> = {
   length: {
+    mm: 'Millimeter (mm)',
+    cm: 'Centimeter (cm)',
     m: 'Meter (m)',
     km: 'Kilometer (km)',
-    cm: 'Centimeter (cm)',
-    mm: 'Millimeter (mm)',
+    in: 'Inch (in)',
+    ft: 'Foot (ft)',
+    yd: 'Yard (yd)',
+    mi: 'Mile (mi)',
+    nmi: 'Nautical Mile (nmi)',
     um: 'Micrometer (μm)',
     nm: 'Nanometer (nm)',
-    mi: 'Mile (mi)',
-    yd: 'Yard (yd)',
-    ft: 'Foot (ft)',
-    in: 'Inch (in)',
-    nmi: 'Nautical Mile (nmi)',
     fur: 'Furlong (fur)',
     chain: 'Chain',
     rod: 'Rod',
-    mil: 'Mil',
     au: 'Astronomical Unit (AU)',
   },
   weight: {
-    kg: 'Kilogram (kg)',
-    g: 'Gram (g)',
     mg: 'Milligram (mg)',
-    ug: 'Microgram (μg)',
-    lb: 'Pound (lb)',
+    g: 'Gram (g)',
+    kg: 'Kilogram (kg)',
+    tonne: 'Metric Ton (t)',
     oz: 'Ounce (oz)',
-    ton_us: 'US Ton',
-    ton_metric: 'Metric Ton',
-    ton_uk: 'UK Ton',
+    lb: 'Pound (lb)',
     st: 'Stone (st)',
+    ton_us: 'US Ton',
+    ton_uk: 'UK Ton',
     ct: 'Carat (ct)',
     grain: 'Grain',
     dwt: 'Pennyweight (dwt)',
     slug: 'Slug',
-    amu: 'Atomic Mass Unit (amu)',
     q: 'Quintal (q)',
+    amu: 'Atomic Mass Unit (amu)',
   },
   temperature: {
     C: 'Celsius (°C)',
@@ -207,85 +191,65 @@ const UNIT_LABELS: Record<CategoryKey, Record<string, string>> = {
     De: 'Delisle (°De)',
     N: 'Newton (°N)',
     Ro: 'Rømer (°Rø)',
-    Cx10: 'Celsius ×10',
-    Cx100: 'Celsius ×100',
-    Fx10: 'Fahrenheit ×10',
-    Fx100: 'Fahrenheit ×100',
-    Kx10: 'Kelvin ×10',
-    Kx100: 'Kelvin ×100',
-    Rx10: 'Rankine ×10',
   },
   volume: {
-    l: 'Liter (L)',
     ml: 'Milliliter (mL)',
+    l: 'Liter (L)',
     m3: 'Cubic Meter (m³)',
-    cm3: 'Cubic Centimeter (cm³)',
-    mm3: 'Cubic Millimeter (mm³)',
+    tsp_us: 'US Teaspoon',
+    tbsp_us: 'US Tablespoon',
+    floz_us: 'US Fluid Ounce',
+    cup_us: 'US Cup',
+    pt_us: 'US Pint',
+    qt_us: 'US Quart',
+    gal_us: 'US Gallon',
     in3: 'Cubic Inch (in³)',
     ft3: 'Cubic Foot (ft³)',
     yd3: 'Cubic Yard (yd³)',
-    gal_us: 'US Gallon',
-    qt_us: 'US Quart',
-    pt_us: 'US Pint',
-    cup_us: 'US Cup',
-    floz_us: 'US Fluid Ounce',
-    tbsp_us: 'US Tablespoon',
-    tsp_us: 'US Teaspoon',
     bbl_us: 'US Barrel',
+    cm3: 'Cubic Centimeter (cm³)',
   },
   currency: Object.fromEntries(
-    Object.keys(CURRENCY_TO_USD).map((currency) => [currency, `${currency} (${currency})`]),
+    Object.keys(CURRENCY_TO_USD).map((code) => [code, `${code} (${code})`]),
   ),
 };
 
-const tabs: CategoryKey[] = ['length', 'weight', 'temperature', 'volume', 'currency'];
-
-function unitOptions(category: CategoryKey): UnitOption[] {
-  return Object.keys(UNIT_LABELS[category]).map((value) => ({
-    label: UNIT_LABELS[category][value],
-    value,
-  }));
-}
-
-function formatNumber(value: number) {
-  if (!Number.isFinite(value)) {
-    return '-';
-  }
+function formatNumber(value: number): string {
+  if (!Number.isFinite(value)) return '-';
 
   return new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: 8,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: Math.abs(value) >= 1 ? 6 : 8,
   }).format(value);
 }
 
-function convert(category: CategoryKey, amount: number, from: string, to: string): number {
-  if (from === to) {
-    return amount;
-  }
+function convertValue(category: CategoryKey, amount: number, from: string, to: string): number {
+  if (!Number.isFinite(amount)) return 0;
+  if (from === to) return amount;
 
   if (category === 'temperature') {
-    const fromUnit = TEMPERATURE_UNITS[from];
-    const toUnit = TEMPERATURE_UNITS[to];
-    const kelvin = fromUnit.toKelvinA * amount + fromUnit.toKelvinB;
-    return (kelvin - toUnit.toKelvinB) / toUnit.toKelvinA;
+    const source = TEMPERATURE_UNITS[from];
+    const target = TEMPERATURE_UNITS[to];
+    const kelvin = source.toKelvinA * amount + source.toKelvinB;
+    return (kelvin - target.toKelvinB) / target.toKelvinA;
   }
 
   if (category === 'currency') {
-    const fromRate = CURRENCY_TO_USD[from];
-    const toRate = CURRENCY_TO_USD[to];
-    const usd = amount / fromRate;
-    return usd * toRate;
+    const sourceRate = CURRENCY_TO_USD[from];
+    const targetRate = CURRENCY_TO_USD[to];
+    const inUSD = amount / sourceRate;
+    return inUSD * targetRate;
   }
 
   const table = category === 'length' ? LENGTH_UNITS : category === 'weight' ? WEIGHT_UNITS : VOLUME_UNITS;
-  const inBase = amount * table[from].toBase;
-  return inBase / table[to].toBase;
+  return (amount * table[from].toBase) / table[to].toBase;
 }
 
-function makeFavoriteId(category: CategoryKey, from: string, to: string) {
+function makeFavoriteId(category: CategoryKey, from: string, to: string): string {
   return `${category}:${from}:${to}`;
 }
 
-function PickerField({
+function UnitPicker({
   label,
   value,
   options,
@@ -293,7 +257,7 @@ function PickerField({
 }: {
   label: string;
   value: string;
-  options: UnitOption[];
+  options: { label: string; value: string }[];
   onChange: (next: string) => void;
 }) {
   const [visible, setVisible] = useState(false);
@@ -306,13 +270,15 @@ function PickerField({
         {label}
       </ThemedText>
       <Pressable style={styles.pickerButton} onPress={() => setVisible(true)}>
-        <ThemedText style={styles.pickerText}>{selectedLabel}</ThemedText>
+        <ThemedText style={styles.pickerButtonText} numberOfLines={1}>
+          {selectedLabel}
+        </ThemedText>
         <ThemedText style={styles.pickerChevron}>▾</ThemedText>
       </Pressable>
 
       <Modal visible={visible} transparent animationType="slide" onRequestClose={() => setVisible(false)}>
         <View style={styles.modalOverlay}>
-          <ThemedView style={styles.modalCard}>
+          <ThemedView style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <ThemedText type="subtitle">Select {label}</ThemedText>
               <Pressable onPress={() => setVisible(false)}>
@@ -320,19 +286,20 @@ function PickerField({
               </Pressable>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
-              {options.map((option) => (
-                <Pressable
-                  key={option.value}
-                  style={[styles.optionItem, option.value === value && styles.optionItemActive]}
-                  onPress={() => {
-                    onChange(option.value);
-                    setVisible(false);
-                  }}>
-                  <ThemedText style={option.value === value ? styles.optionActiveText : undefined}>
-                    {option.label}
-                  </ThemedText>
-                </Pressable>
-              ))}
+              {options.map((option) => {
+                const active = option.value === value;
+                return (
+                  <Pressable
+                    key={option.value}
+                    style={[styles.optionItem, active && styles.optionItemActive]}
+                    onPress={() => {
+                      onChange(option.value);
+                      setVisible(false);
+                    }}>
+                    <ThemedText style={active ? styles.optionTextActive : undefined}>{option.label}</ThemedText>
+                  </Pressable>
+                );
+              })}
             </ScrollView>
           </ThemedView>
         </View>
@@ -346,9 +313,9 @@ export default function ConvertlyScreen() {
   const isDark = colorScheme === 'dark';
 
   const [category, setCategory] = useState<CategoryKey>('length');
-  const [amount, setAmount] = useState('1');
+  const [amountInput, setAmountInput] = useState('1');
 
-  const [fromUnit, setFromUnit] = useState<Record<CategoryKey, string>>({
+  const [fromUnits, setFromUnits] = useState<Record<CategoryKey, string>>({
     length: 'm',
     weight: 'kg',
     temperature: 'C',
@@ -356,7 +323,7 @@ export default function ConvertlyScreen() {
     currency: 'USD',
   });
 
-  const [toUnit, setToUnit] = useState<Record<CategoryKey, string>>({
+  const [toUnits, setToUnits] = useState<Record<CategoryKey, string>>({
     length: 'ft',
     weight: 'lb',
     temperature: 'F',
@@ -367,20 +334,13 @@ export default function ConvertlyScreen() {
   const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
 
-  const options = useMemo(() => unitOptions(category), [category]);
+  const options = Object.entries(UNIT_LABELS[category]).map(([value, label]) => ({ value, label }));
+  const numericAmount = Number(amountInput);
+  const result = convertValue(category, numericAmount, fromUnits[category], toUnits[category]);
 
-  const numericAmount = useMemo(() => {
-    const parsed = Number(amount);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }, [amount]);
-
-  const result = useMemo(
-    () => convert(category, numericAmount, fromUnit[category], toUnit[category]),
-    [category, numericAmount, fromUnit, toUnit],
-  );
-
+  // Load local data once. App remains fully offline and permission-free.
   useEffect(() => {
-    (async () => {
+    const loadStoredData = async () => {
       try {
         const [storedFavorites, storedRecent] = await Promise.all([
           AsyncStorage.getItem(FAVORITES_KEY),
@@ -390,197 +350,195 @@ export default function ConvertlyScreen() {
         if (storedFavorites) {
           setFavorites(JSON.parse(storedFavorites));
         }
-
         if (storedRecent) {
           setRecent(JSON.parse(storedRecent));
         }
       } catch {
-        // no-op for resilience in case corrupted local data exists
+        // Silently ignore malformed storage data for resilience.
       }
-    })();
-  }, []);
-
-  const saveFavorites = useCallback(async (next: FavoriteItem[]) => {
-    setFavorites(next);
-    await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
-  }, []);
-
-  const saveRecent = useCallback(async (next: RecentItem[]) => {
-    setRecent(next);
-    await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(next));
-  }, []);
-
-  const swapUnits = useCallback(() => {
-    setFromUnit((current) => ({ ...current, [category]: toUnit[category] }));
-    setToUnit((current) => ({ ...current, [category]: fromUnit[category] }));
-  }, [category, fromUnit, toUnit]);
-
-  const toggleFavorite = useCallback(async () => {
-    const id = makeFavoriteId(category, fromUnit[category], toUnit[category]);
-    const exists = favorites.some((favorite) => favorite.id === id);
-
-    if (exists) {
-      await saveFavorites(favorites.filter((favorite) => favorite.id !== id));
-      return;
-    }
-
-    await saveFavorites([
-      {
-        id,
-        category,
-        from: fromUnit[category],
-        to: toUnit[category],
-      },
-      ...favorites,
-    ]);
-  }, [category, favorites, fromUnit, saveFavorites, toUnit]);
-
-  const addToRecent = useCallback(async () => {
-    const nextItem: RecentItem = {
-      id: `${Date.now()}`,
-      category,
-      amount: numericAmount,
-      from: fromUnit[category],
-      to: toUnit[category],
-      result,
-      createdAt: new Date().toISOString(),
     };
 
-    const next = [nextItem, ...recent].slice(0, 25);
-    await saveRecent(next);
-  }, [category, fromUnit, numericAmount, recent, result, saveRecent, toUnit]);
+    void loadStoredData();
+  }, []);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void addToRecent();
+    const saveRecent = async () => {
+      if (!amountInput.trim()) return;
+      if (!Number.isFinite(numericAmount)) return;
+
+      const entry: RecentItem = {
+        id: `${Date.now()}`,
+        category,
+        amount: numericAmount,
+        from: fromUnits[category],
+        to: toUnits[category],
+        result,
+        createdAt: new Date().toISOString(),
+      };
+
+      const next = [entry, ...recent].slice(0, 25);
+      setRecent(next);
+      try {
+        await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(next));
+      } catch {
+        // Keep UI responsive even if write fails.
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      void saveRecent();
     }, 500);
 
-    return () => clearTimeout(timer);
-  }, [addToRecent]);
+    return () => clearTimeout(timeout);
+  }, [amountInput, category, fromUnits, numericAmount, recent, result, toUnits]);
 
-  const activeFavoriteId = makeFavoriteId(category, fromUnit[category], toUnit[category]);
-  const isFavorite = favorites.some((favorite) => favorite.id === activeFavoriteId);
+  const toggleFavorite = async () => {
+    const id = makeFavoriteId(category, fromUnits[category], toUnits[category]);
+    const exists = favorites.some((item) => item.id === id);
+
+    const next = exists
+      ? favorites.filter((item) => item.id !== id)
+      : [{ id, category, from: fromUnits[category], to: toUnits[category] }, ...favorites];
+
+    setFavorites(next);
+    try {
+      await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
+    } catch {
+      // No-op.
+    }
+  };
+
+  const isFavorite = favorites.some(
+    (item) => item.id === makeFavoriteId(category, fromUnits[category], toUnits[category]),
+  );
 
   return (
     <KeyboardAvoidingView
-      style={[styles.screen, { backgroundColor: isDark ? '#0B0B0D' : '#F2F4F8' }]}
+      style={[styles.screen, { backgroundColor: isDark ? '#0B1017' : '#EEF3FA' }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <ThemedText type="title" style={styles.title}>
           Convertly
         </ThemedText>
-        <ThemedText style={styles.subtitle}>Offline Unit & Currency Converter</ThemedText>
+        <ThemedText style={styles.subtitle}>Fully offline unit & currency converter</ThemedText>
 
-        <ThemedView style={[styles.card, { backgroundColor: isDark ? '#15171A' : '#FFFFFF' }]}>
-          <View style={styles.tabRow}>
-            {tabs.map((tab) => {
-              const active = category === tab;
+        <ThemedView style={[styles.card, { backgroundColor: isDark ? '#121A24' : '#FFFFFF' }]}> 
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segmentRow}>
+            {CATEGORIES.map((item) => {
+              const active = item === category;
               return (
                 <Pressable
-                  key={tab}
-                  style={[styles.tabButton, active && styles.tabButtonActive]}
-                  onPress={() => setCategory(tab)}>
-                  <ThemedText style={[styles.tabText, active && styles.tabTextActive]}>
-                    {CATEGORY_LABELS[tab]}
+                  key={item}
+                  style={[styles.segmentButton, active && styles.segmentButtonActive]}
+                  onPress={() => setCategory(item)}>
+                  <ThemedText style={[styles.segmentText, active && styles.segmentTextActive]}>
+                    {CATEGORY_LABELS[item]}
                   </ThemedText>
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
 
-          <View style={styles.inputBlock}>
+          <View style={styles.block}>
             <ThemedText type="defaultSemiBold" style={styles.fieldLabel}>
               Amount
             </ThemedText>
             <TextInput
-              value={amount}
-              onChangeText={setAmount}
+              value={amountInput}
+              onChangeText={setAmountInput}
               keyboardType="decimal-pad"
               placeholder="Enter value"
-              placeholderTextColor={isDark ? '#888' : '#A0A0A0'}
+              placeholderTextColor={isDark ? '#708099' : '#97A4B8'}
               style={[
-                styles.amountInput,
+                styles.input,
                 {
-                  color: isDark ? '#FFF' : '#111',
-                  backgroundColor: isDark ? '#22252A' : '#F4F7FB',
+                  color: isDark ? '#ECF3FF' : '#122033',
+                  backgroundColor: isDark ? '#1A2533' : '#F4F8FF',
                 },
               ]}
             />
           </View>
 
-          <View style={styles.pickersRow}>
-            <View style={styles.pickerCol}>
-              <PickerField
+          <View style={styles.converterRow}>
+            <View style={styles.unitCol}>
+              <UnitPicker
                 label="From"
-                value={fromUnit[category]}
+                value={fromUnits[category]}
                 options={options}
-                onChange={(value) => setFromUnit((current) => ({ ...current, [category]: value }))}
+                onChange={(next) => setFromUnits((prev) => ({ ...prev, [category]: next }))}
               />
             </View>
 
-            <Pressable style={styles.swapButton} onPress={swapUnits}>
+            <Pressable
+              style={styles.swapButton}
+              onPress={() => {
+                const from = fromUnits[category];
+                const to = toUnits[category];
+                setFromUnits((prev) => ({ ...prev, [category]: to }));
+                setToUnits((prev) => ({ ...prev, [category]: from }));
+              }}>
               <ThemedText style={styles.swapButtonText}>⇄</ThemedText>
             </Pressable>
 
-            <View style={styles.pickerCol}>
-              <PickerField
+            <View style={styles.unitCol}>
+              <UnitPicker
                 label="To"
-                value={toUnit[category]}
+                value={toUnits[category]}
                 options={options}
-                onChange={(value) => setToUnit((current) => ({ ...current, [category]: value }))}
+                onChange={(next) => setToUnits((prev) => ({ ...prev, [category]: next }))}
               />
             </View>
           </View>
 
-          <View style={[styles.resultCard, { backgroundColor: isDark ? '#1D2530' : '#EAF2FF' }]}>
-            <ThemedText type="defaultSemiBold">Converted Value</ThemedText>
+          <View style={[styles.resultCard, { backgroundColor: isDark ? '#14263E' : '#EAF3FF' }]}> 
+            <ThemedText type="defaultSemiBold">Converted value</ThemedText>
             <ThemedText style={styles.resultText}>{formatNumber(result)}</ThemedText>
           </View>
 
           <Pressable style={styles.favoriteButton} onPress={() => void toggleFavorite()}>
-            <ThemedText style={styles.favoriteButtonText}>
+            <ThemedText style={styles.favoriteText}>
               {isFavorite ? '★ Remove Favorite' : '☆ Save to Favorites'}
             </ThemedText>
           </Pressable>
         </ThemedView>
 
-        <ThemedView style={[styles.card, { backgroundColor: isDark ? '#15171A' : '#FFFFFF' }]}>
+        <ThemedView style={[styles.card, { backgroundColor: isDark ? '#121A24' : '#FFFFFF' }]}> 
           <ThemedText type="subtitle" style={styles.sectionTitle}>
             Favorites
           </ThemedText>
           {favorites.length === 0 ? (
-            <ThemedText>No favorites yet.</ThemedText>
+            <ThemedText style={styles.emptyText}>No favorites yet.</ThemedText>
           ) : (
-            favorites.slice(0, 8).map((favorite) => (
+            favorites.slice(0, 8).map((item) => (
               <Pressable
-                key={favorite.id}
+                key={item.id}
                 style={styles.listItem}
                 onPress={() => {
-                  setCategory(favorite.category);
-                  setFromUnit((current) => ({ ...current, [favorite.category]: favorite.from }));
-                  setToUnit((current) => ({ ...current, [favorite.category]: favorite.to }));
+                  setCategory(item.category);
+                  setFromUnits((prev) => ({ ...prev, [item.category]: item.from }));
+                  setToUnits((prev) => ({ ...prev, [item.category]: item.to }));
                 }}>
-                <ThemedText style={styles.listTitle}>{CATEGORY_LABELS[favorite.category]}</ThemedText>
+                <ThemedText style={styles.listTitle}>{CATEGORY_LABELS[item.category]}</ThemedText>
                 <ThemedText>
-                  {UNIT_LABELS[favorite.category][favorite.from]} → {UNIT_LABELS[favorite.category][favorite.to]}
+                  {UNIT_LABELS[item.category][item.from]} → {UNIT_LABELS[item.category][item.to]}
                 </ThemedText>
               </Pressable>
             ))
           )}
         </ThemedView>
 
-        <ThemedView style={[styles.card, { backgroundColor: isDark ? '#15171A' : '#FFFFFF' }]}>
+        <ThemedView style={[styles.card, { backgroundColor: isDark ? '#121A24' : '#FFFFFF' }]}> 
           <ThemedText type="subtitle" style={styles.sectionTitle}>
             Recent Conversions
           </ThemedText>
           {recent.length === 0 ? (
-            <ThemedText>No recent conversions yet.</ThemedText>
+            <ThemedText style={styles.emptyText}>No recent conversions yet.</ThemedText>
           ) : (
-            recent.slice(0, 10).map((entry) => (
-              <View key={entry.id} style={styles.listItem}>
-                <ThemedText style={styles.listTitle}>{CATEGORY_LABELS[entry.category]}</ThemedText>
+            recent.slice(0, 10).map((item) => (
+              <View key={item.id} style={styles.listItem}>
+                <ThemedText style={styles.listTitle}>{CATEGORY_LABELS[item.category]}</ThemedText>
                 <ThemedText>
-                  {formatNumber(entry.amount)} {entry.from} → {formatNumber(entry.result)} {entry.to}
+                  {formatNumber(item.amount)} {item.from} → {formatNumber(item.result)} {item.to}
                 </ThemedText>
               </View>
             ))
@@ -592,13 +550,11 @@ export default function ConvertlyScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-  },
+  screen: { flex: 1 },
   content: {
+    paddingTop: 56,
     paddingHorizontal: 16,
-    paddingTop: 58,
-    paddingBottom: 28,
+    paddingBottom: 30,
     gap: 14,
   },
   title: {
@@ -606,97 +562,95 @@ const styles = StyleSheet.create({
     lineHeight: 38,
   },
   subtitle: {
-    opacity: 0.7,
+    opacity: 0.72,
     marginTop: -4,
-    marginBottom: 2,
   },
   card: {
     borderRadius: 18,
     padding: 14,
     gap: 14,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.08,
-    shadowRadius: 10,
+    shadowRadius: 12,
     elevation: 3,
   },
-  tabRow: {
+  segmentRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 8,
+    paddingBottom: 2,
   },
-  tabButton: {
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: '#DCE1EA',
+  segmentButton: {
+    borderRadius: 999,
+    backgroundColor: '#DFE7F4',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
   },
-  tabButtonActive: {
+  segmentButtonActive: {
     backgroundColor: ACCENT,
   },
-  tabText: {
+  segmentText: {
     fontSize: 13,
-    color: '#24324A',
-  },
-  tabTextActive: {
-    color: '#fff',
+    color: '#1D2E45',
     fontWeight: '600',
   },
-  inputBlock: {
+  segmentTextActive: {
+    color: '#FFFFFF',
+  },
+  block: {
     gap: 6,
   },
   fieldLabel: {
     fontSize: 14,
   },
-  amountInput: {
+  input: {
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 12,
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 20,
+    fontWeight: '700',
   },
-  pickersRow: {
+  converterRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 8,
   },
-  pickerCol: {
+  unitCol: {
     flex: 1,
     gap: 6,
   },
   pickerButton: {
-    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#BFC8D8',
+    borderColor: '#C3D1E6',
+    backgroundColor: '#F7FAFF',
+    borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 11,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#F7F9FC',
   },
-  pickerText: {
+  pickerButtonText: {
     flex: 1,
     marginRight: 8,
   },
   pickerChevron: {
     color: ACCENT,
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   swapButton: {
-    backgroundColor: ACCENT,
-    borderRadius: 999,
     width: 42,
     height: 42,
+    borderRadius: 999,
+    backgroundColor: ACCENT,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 1,
   },
   swapButtonText: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontSize: 20,
-    marginTop: -2,
+    marginTop: -1,
   },
   resultCard: {
     borderRadius: 12,
@@ -704,42 +658,45 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   resultText: {
-    fontSize: 30,
     color: ACCENT,
-    fontWeight: '700',
+    fontSize: 31,
+    fontWeight: '800',
   },
   favoriteButton: {
-    borderRadius: 10,
     backgroundColor: ACCENT,
-    paddingVertical: 10,
+    borderRadius: 11,
+    paddingVertical: 11,
     alignItems: 'center',
   },
-  favoriteButtonText: {
-    color: '#fff',
-    fontWeight: '600',
+  favoriteText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   sectionTitle: {
     marginBottom: 2,
   },
+  emptyText: {
+    opacity: 0.72,
+  },
   listItem: {
-    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#D8DEEA',
+    borderColor: '#D6E0EF',
+    borderRadius: 10,
     padding: 10,
     gap: 2,
   },
   listTitle: {
-    fontWeight: '600',
+    fontWeight: '700',
   },
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: 'rgba(0,0,0,0.42)',
   },
-  modalCard: {
+  modalSheet: {
     maxHeight: '70%',
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     padding: 14,
     gap: 8,
   },
@@ -751,18 +708,18 @@ const styles = StyleSheet.create({
   },
   doneText: {
     color: ACCENT,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   optionItem: {
+    borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 8,
-    borderRadius: 8,
   },
   optionItemActive: {
     backgroundColor: '#EAF2FF',
   },
-  optionActiveText: {
+  optionTextActive: {
     color: ACCENT,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 });
