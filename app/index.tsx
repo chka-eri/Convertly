@@ -2,7 +2,9 @@
 // Run: npx expo install @react-native-async-storage/async-storage
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { useCallback, useEffect, useState } from 'react';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   FlatList,
   Modal,
@@ -17,6 +19,15 @@ import {
   useColorScheme,
   View
 } from 'react-native';
+import Animated, {
+  FadeInDown,
+  FadeInUp,
+  Layout,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 
 // ─── Storage Keys ───────────────────────────────────────────────────────────
 const FAVORITES_KEY = '@Convertly_favorites';
@@ -175,7 +186,6 @@ function convert(value: number, from: Unit, to: Unit): number {
 /** Format a number with commas and up to 6 significant decimal places */
 function formatNumber(n: number): string {
   if (!isFinite(n)) return '—';
-  // Determine significant decimal places
   const abs = Math.abs(n);
   let decimals = 2;
   if (abs === 0) decimals = 0;
@@ -193,6 +203,93 @@ function formatNumber(n: number): string {
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 9);
+}
+
+// ─── Animated Pressable Component ────────────────────────────────────────────
+
+function AnimatedPressable({
+  onPress,
+  onLongPress,
+  children,
+  style,
+  haptic = true,
+  disabled,
+  ...props
+}: {
+  onPress?: () => void;
+  onLongPress?: () => void;
+  children: React.ReactNode;
+  style?: any;
+  haptic?: boolean;
+  disabled?: boolean;
+  [key: string]: any;
+}) {
+  const scale = useSharedValue(1);
+  const opacity = useSharedValue(1);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    opacity: opacity.value,
+  }));
+
+  return (
+    <TouchableOpacity
+      activeOpacity={1}
+      onPressIn={() => {
+        scale.value = withSpring(0.94, { damping: 15, stiffness: 300 });
+        opacity.value = withTiming(0.85, { duration: 80 });
+        if (haptic) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+      }}
+      onPressOut={() => {
+        scale.value = withSpring(1, { damping: 12, stiffness: 250 });
+        opacity.value = withTiming(1, { duration: 150 });
+      }}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      disabled={disabled}
+      {...props}
+    >
+      <Animated.View style={[style, animatedStyle]}>
+        {children}
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
+// ─── Animated Result Component ───────────────────────────────────────────────
+
+function AnimatedResult({ value, unit, style, ...props }: {
+  value: string;
+  unit: string;
+  style?: any;
+  [key: string]: any;
+}) {
+  const opacity = useSharedValue(1);
+  const translateY = useSharedValue(0);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ translateY: translateY.value }],
+  }));
+
+  useEffect(() => {
+    opacity.value = withTiming(0, { duration: 80 });
+    translateY.value = withTiming(8, { duration: 80 });
+    const t = setTimeout(() => {
+      opacity.value = withTiming(1, { duration: 200 });
+      translateY.value = withTiming(0, { duration: 200 });
+    }, 100);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  return (
+    <Animated.Text style={[style, animatedStyle]} {...props}>
+      {value} {unit}
+    </Animated.Text>
+  );
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -218,6 +315,9 @@ export default function ConvertlyApp() {
   // Persisted data
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [recent, setRecent] = useState<RecentEntry[]>([]);
+
+  // Refs to prevent duplicate haptics
+  const lastCategoryRef = useRef<Category>('Length');
 
   // ── Load persisted data on mount ─────────────────────────────────────────
   useEffect(() => {
@@ -256,14 +356,13 @@ export default function ConvertlyApp() {
       result: res,
       timestamp: Date.now(),
     };
-    const updated = [entry, ...recent].slice(0, 30); // keep last 30
+    const updated = [entry, ...recent].slice(0, 30);
     setRecent(updated);
     try {
       await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(updated));
     } catch (_) {}
   }, [activeCategory, fromUnit, toUnit, inputValue, recent]);
 
-  // Save recent when result changes (debounce via useEffect)
   useEffect(() => {
     if (resultStr !== '—' && inputValue.length > 0) {
       const t = setTimeout(() => saveRecent(resultStr), 600);
@@ -273,8 +372,17 @@ export default function ConvertlyApp() {
 
   // ── Swap from/to ──────────────────────────────────────────────────────────
   const handleSwap = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setFromUnit(toUnit);
     setToUnit(fromUnit);
+  };
+
+  const handleCategoryChange = (cat: Category) => {
+    if (cat !== lastCategoryRef.current) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      lastCategoryRef.current = cat;
+    }
+    setActiveCategory(cat);
   };
 
   // ── Favorites ─────────────────────────────────────────────────────────────
@@ -283,6 +391,9 @@ export default function ConvertlyApp() {
   );
 
   const toggleFavorite = async () => {
+    Haptics.notificationAsync(
+      isFavorited ? Haptics.NotificationFeedbackType.Warning : Haptics.NotificationFeedbackType.Success
+    );
     let updated: Favorite[];
     if (isFavorited) {
       updated = favorites.filter(
@@ -304,7 +415,6 @@ export default function ConvertlyApp() {
     const t = units.find(u => u.symbol === fav.to);
     if (!f || !t) return;
     setActiveCategory(fav.category);
-    // Units will be reset by category effect, so set after a tick
     setTimeout(() => {
       setFromUnit(f);
       setToUnit(t);
@@ -314,6 +424,7 @@ export default function ConvertlyApp() {
   };
 
   const deleteFavorite = async (id: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const updated = favorites.filter(f => f.id !== id);
     setFavorites(updated);
     try {
@@ -323,11 +434,13 @@ export default function ConvertlyApp() {
 
   // ── Picker helpers ────────────────────────────────────────────────────────
   const openPicker = (target: 'from' | 'to') => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setPickerTarget(target);
     setPickerVisible(true);
   };
 
   const selectUnit = (unit: Unit) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (pickerTarget === 'from') setFromUnit(unit);
     else setToUnit(unit);
     setPickerVisible(false);
@@ -338,327 +451,739 @@ export default function ConvertlyApp() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}>
-    <View style={[s.root, { backgroundColor: C.bg }]}>
       <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} />
+      <View style={[s.root, { backgroundColor: C.bg }]}>
 
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <View style={s.header}>
-        <Text style={[s.appTitle, { color: C.text }]}>Convertly</Text>
-        <View style={s.headerActions}>
-          <TouchableOpacity style={s.headerBtn} onPress={() => { setShowRecent(true); setShowFavorites(false); }}>
-            <Text style={[s.headerBtnText, { color: C.accent }]}>🕐 Recent</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.headerBtn} onPress={() => { setShowFavorites(true); setShowRecent(false); }}>
-            <Text style={[s.headerBtnText, { color: C.accent }]}>⭐ Saved</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* ── Category Tabs ─────────────────────────────────────────────────── */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabsScroll} contentContainerStyle={s.tabsContainer}>
-        {CATEGORIES.map(cat => {
-          const active = cat === activeCategory;
-          return (
-            <TouchableOpacity
-              key={cat}
-              style={[s.tab, active && { backgroundColor: C.accent, borderColor: C.accent }]}
-              onPress={() => setActiveCategory(cat)}
-            >
-              <Text style={[s.tabText, { color: active ? '#fff' : C.textMuted }]}>
-                {CATEGORY_ICONS[cat]}{'  '}{cat}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
-
-      {/* ── Main Converter Card ───────────────────────────────────────────── */}
-      <ScrollView contentContainerStyle={s.scrollContent} keyboardShouldPersistTaps="handled">
-        <View style={[s.card, { backgroundColor: C.card, borderColor: C.border }]}>
-
-          {/* From Unit */}
-          <Text style={[s.sectionLabel, { color: C.textMuted }]}>FROM</Text>
-          <TouchableOpacity style={[s.unitSelector, { backgroundColor: C.inputBg, borderColor: C.border }]} onPress={() => openPicker('from')}>
+        {/* ── Gradient Header ───────────────────────────────────────────── */}
+        <LinearGradient
+          colors={C.headerGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={s.headerGradient}
+        >
+          <View style={s.header}>
             <View>
-              <Text style={[s.unitLabel, { color: C.text }]}>{fromUnit.label}</Text>
-              <Text style={[s.unitSymbol, { color: C.accent }]}>{fromUnit.symbol}</Text>
+              <Text style={s.appTitle}>Convertly</Text>
+              <Text style={s.appSubtitle}>Unit & Currency Converter</Text>
             </View>
-            <Text style={[s.chevron, { color: C.textMuted }]}>›</Text>
-          </TouchableOpacity>
-
-          {/* Input */}
-          <TextInput
-            style={[s.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.text }]}
-            value={inputValue}
-            onChangeText={setInputValue}
-            keyboardType="decimal-pad"
-            placeholder="Enter value"
-            placeholderTextColor={C.textMuted}
-            returnKeyType="done"
-          />
-
-          {/* Swap + Favorite row */}
-          <View style={s.actionsRow}>
-            <TouchableOpacity style={[s.actionBtn, { backgroundColor: C.accent }]} onPress={handleSwap}>
-              <Text style={s.actionBtnText}>⇅ Swap</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[s.actionBtnLast, { backgroundColor: isFavorited ? '#f59e0b' : C.inputBg, borderColor: C.border }]}
-              onPress={toggleFavorite}
-            >
-              <Text style={[s.actionBtnText, { color: isFavorited ? '#fff' : C.textMuted }]}>
-                {isFavorited ? '★ Saved' : '☆ Save'}
-              </Text>
-            </TouchableOpacity>
+            <View style={s.headerActions}>
+              <AnimatedPressable
+                style={s.headerBtn}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowRecent(true); setShowFavorites(false); }}
+              >
+                <Text style={s.headerBtnIcon}>🕐</Text>
+                <Text style={s.headerBtnText}>Recent</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                style={[s.headerBtn, { marginLeft: 8 }]}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowFavorites(true); setShowRecent(false); }}
+              >
+                <Text style={s.headerBtnIcon}>⭐</Text>
+                <Text style={s.headerBtnText}>Saved</Text>
+              </AnimatedPressable>
+            </View>
           </View>
 
-          {/* To Unit */}
-          <Text style={[s.sectionLabel, { color: C.textMuted, marginTop: 8 }]}>TO</Text>
-          <TouchableOpacity style={[s.unitSelector, { backgroundColor: C.inputBg, borderColor: C.border }]} onPress={() => openPicker('to')}>
-            <View>
-              <Text style={[s.unitLabel, { color: C.text }]}>{toUnit.label}</Text>
-              <Text style={[s.unitSymbol, { color: C.accent }]}>{toUnit.symbol}</Text>
-            </View>
-            <Text style={[s.chevron, { color: C.textMuted }]}>›</Text>
-          </TouchableOpacity>
-
-          {/* Result */}
-          <View style={[s.resultBox, { backgroundColor: C.resultBg, borderColor: C.accent }]}>
-            <Text style={[s.resultLabel, { color: C.accent }]}>Result</Text>
-            <Text style={[s.resultValue, { color: C.text }]} numberOfLines={1} adjustsFontSizeToFit>
-              {resultStr} {toUnit.symbol}
-            </Text>
-            <Text style={[s.resultEquation, { color: C.textMuted }]}>
-              {formatNumber(numericInput)} {fromUnit.symbol} = {resultStr} {toUnit.symbol}
-            </Text>
-            {activeCategory === 'Currency' && (
-              <Text style={[s.rateNote, { color: C.textMuted }]}>
-                ⚠️ Rates are approximate. For live rates use a connected app.
-              </Text>
-            )}
-          </View>
-        </View>
-
-        {/* Quick reference: all units in this category */}
-        <View style={[s.card, { backgroundColor: C.card, borderColor: C.border, marginTop: 16 }]}>
-          <Text style={[s.cardTitle, { color: C.text }]}>All {activeCategory} Units</Text>
-          {UNITS_MAP[activeCategory].map(unit => {
-            const val = convert(numericInput, fromUnit, unit);
-            return (
-              <View key={unit.symbol} style={[s.referenceRow, { borderBottomColor: C.border }]}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.refLabel, { color: C.text }]}>{unit.label}</Text>
-                  <Text style={[s.refSymbol, { color: C.textMuted }]}>{unit.symbol}</Text>
-                </View>
-                <Text style={[s.refValue, { color: C.accent }]}>{formatNumber(val)}</Text>
-              </View>
-            );
-          })}
-        </View>
-      </ScrollView>
-
-      {/* ── Unit Picker Modal ─────────────────────────────────────────────── */}
-      <Modal visible={pickerVisible} animationType="slide" transparent onRequestClose={() => setPickerVisible(false)}>
-        <Pressable style={s.modalOverlay} onPress={() => setPickerVisible(false)}>
-          <Pressable style={[s.modalSheet, { backgroundColor: C.card }]} onPress={e => e.stopPropagation()}>
-            <View style={s.modalHandle} />
-            <Text style={[s.modalTitle, { color: C.text }]}>
-              Select {activeCategory} Unit
-            </Text>
-            <FlatList
-              data={UNITS_MAP[activeCategory]}
-              keyExtractor={u => u.symbol}
-              renderItem={({ item }) => {
-                const isSelected = item.symbol === (pickerTarget === 'from' ? fromUnit : toUnit).symbol;
-                return (
-                  <TouchableOpacity
-                    style={[s.pickerRow, { borderBottomColor: C.border }, isSelected && { backgroundColor: C.resultBg }]}
-                    onPress={() => selectUnit(item)}
-                  >
-                    <Text style={[s.pickerLabel, { color: C.text }]}>{item.label}</Text>
-                    <Text style={[s.pickerSymbol, { color: isSelected ? C.accent : C.textMuted }]}>{item.symbol}</Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* ── Favorites Drawer ──────────────────────────────────────────────── */}
-      <Modal visible={showFavorites} animationType="slide" transparent onRequestClose={() => setShowFavorites(false)}>
-        <Pressable style={s.modalOverlay} onPress={() => setShowFavorites(false)}>
-          <Pressable style={[s.modalSheet, { backgroundColor: C.card }]} onPress={e => e.stopPropagation()}>
-            <View style={s.modalHandle} />
-            <Text style={[s.modalTitle, { color: C.text }]}>⭐ Saved Conversions</Text>
-            {favorites.length === 0 ? (
-              <Text style={[s.emptyText, { color: C.textMuted }]}>No favorites yet. Tap ☆ Save to bookmark a conversion.</Text>
-            ) : (
-              <FlatList
-                data={favorites}
-                keyExtractor={f => f.id}
-                renderItem={({ item }) => (
-                  <TouchableOpacity style={[s.pickerRow, { borderBottomColor: C.border }]} onPress={() => loadFavorite(item)}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[s.pickerLabel, { color: C.text }]}>{CATEGORY_ICONS[item.category]} {item.category}</Text>
-                      <Text style={[s.pickerSymbol, { color: C.accent }]}>{item.from} → {item.to}</Text>
-                    </View>
-                    <TouchableOpacity onPress={() => deleteFavorite(item.id)} style={s.deleteBtn}>
-                      <Text style={{ color: '#ef4444', fontSize: 18 }}>✕</Text>
-                    </TouchableOpacity>
-                  </TouchableOpacity>
-                )}
-              />
-            )}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* ── Recent Drawer ─────────────────────────────────────────────────── */}
-      <Modal visible={showRecent} animationType="slide" transparent onRequestClose={() => setShowRecent(false)}>
-        <Pressable style={s.modalOverlay} onPress={() => setShowRecent(false)}>
-          <Pressable style={[s.modalSheet, { backgroundColor: C.card }]} onPress={e => e.stopPropagation()}>
-            <View style={s.modalHandle} />
-            <Text style={[s.modalTitle, { color: C.text }]}>🕐 Recent Conversions</Text>
-            {recent.length === 0 ? (
-              <Text style={[s.emptyText, { color: C.textMuted }]}>No recent conversions yet.</Text>
-            ) : (
-              <FlatList
-                data={recent}
-                keyExtractor={r => r.id}
-                renderItem={({ item }) => (
-                  <View style={[s.pickerRow, { borderBottomColor: C.border }]}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[s.pickerLabel, { color: C.text }]}>
-                        {CATEGORY_ICONS[item.category]} {item.inputValue} {item.from} → {item.result} {item.to}
+          {/* ── Category Chips ─────────────────────────────────────────── */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={s.tabsScroll}
+            contentContainerStyle={s.tabsContainer}
+          >
+            {CATEGORIES.map((cat, idx) => {
+              const active = cat === activeCategory;
+              return (
+                <AnimatedPressable
+                  key={cat}
+                  haptic={false}
+                  style={[
+                    s.tab,
+                    active && s.tabActive,
+                  ]}
+                  onPress={() => handleCategoryChange(cat)}
+                >
+                  {active ? (
+                    <LinearGradient
+                      colors={C.chipGradient}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={s.tabGradient}
+                    >
+                      <Text style={[s.tabText, s.tabTextActive]}>
+                        {CATEGORY_ICONS[cat]}  {cat}
                       </Text>
-                      <Text style={[s.pickerSymbol, { color: C.textMuted }]}>
-                        {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </LinearGradient>
+                  ) : (
+                    <>
+                      <Text style={[s.tabText, { color: C.textMuted }]}>
+                        {CATEGORY_ICONS[cat]}  {cat}
                       </Text>
-                    </View>
+                    </>
+                  )}
+                </AnimatedPressable>
+              );
+            })}
+          </ScrollView>
+        </LinearGradient>
+
+        {/* ── Main Content ─────────────────────────────────────────────── */}
+        <ScrollView
+          contentContainerStyle={s.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Converter Card */}
+          <Animated.View entering={FadeInDown.springify().damping(14).stiffness(120)}>
+            <View style={s.glassCard}>
+              {/* From Unit */}
+              <Text style={[s.sectionLabel, { color: C.accent }]}>FROM</Text>
+              <AnimatedPressable
+                style={[s.unitSelector, { backgroundColor: C.glassInput }]}
+                onPress={() => openPicker('from')}
+                haptic={false}
+              >
+                <View style={s.unitSelectorContent}>
+                  <View style={s.unitIconCircle}>
+                    <Text style={s.unitIconText}>{fromUnit.symbol.slice(0, 2)}</Text>
                   </View>
-                )}
-              />
-            )}
+                  <View style={{ marginLeft: 12 }}>
+                    <Text style={[s.unitLabel, { color: C.text }]}>{fromUnit.label}</Text>
+                    <Text style={[s.unitSymbol, { color: C.accent }]}>{fromUnit.symbol}</Text>
+                  </View>
+                </View>
+                <Text style={[s.chevron, { color: C.textMuted }]}>›</Text>
+              </AnimatedPressable>
+
+              {/* Input */}
+              <View style={[s.inputWrapper, { backgroundColor: C.glassInput }]}>
+                <Text style={[s.inputPrefix, { color: C.accent }]}>⌨</Text>
+                <TextInput
+                  style={[s.input, { color: C.text }]}
+                  value={inputValue}
+                  onChangeText={setInputValue}
+                  keyboardType="decimal-pad"
+                  placeholder="Enter value"
+                  placeholderTextColor={C.textMuted}
+                  returnKeyType="done"
+                />
+              </View>
+
+              {/* Swap + Favorite row */}
+              <View style={s.actionsRow}>
+                <AnimatedPressable
+                  style={[s.actionBtn, { backgroundColor: C.accent }]}
+                  onPress={handleSwap}
+                >
+                  <LinearGradient
+                    colors={C.btnGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.actionBtnGradient}
+                  >
+                    <Text style={s.actionBtnIcon}>⇅</Text>
+                    <Text style={s.actionBtnText}>Swap</Text>
+                  </LinearGradient>
+                </AnimatedPressable>
+                <AnimatedPressable
+                  style={[
+                    s.actionBtn,
+                    {
+                      marginLeft: 10,
+                      backgroundColor: isFavorited ? 'transparent' : C.glassInput,
+                      borderWidth: 1,
+                      borderColor: isFavorited ? 'transparent' : C.glassBorder,
+                    },
+                    isFavorited && s.actionBtnFav,
+                  ]}
+                  onPress={toggleFavorite}
+                >
+                  <View style={[s.actionBtnInner, isFavorited && s.actionBtnInnerFav]}>
+                    <Text style={[s.actionBtnIcon, isFavorited ? { color: '#FCD34D' } : { color: C.textMuted }]}>
+                      {isFavorited ? '★' : '☆'}
+                    </Text>
+                    <Text style={[s.actionBtnText, { color: isFavorited ? '#FCD34D' : C.textMuted }]}>
+                      {isFavorited ? 'Saved' : 'Save'}
+                    </Text>
+                  </View>
+                </AnimatedPressable>
+              </View>
+
+              {/* To Unit */}
+              <Text style={[s.sectionLabel, { color: C.accent, marginTop: 4 }]}>TO</Text>
+              <AnimatedPressable
+                style={[s.unitSelector, { backgroundColor: C.glassInput }]}
+                onPress={() => openPicker('to')}
+                haptic={false}
+              >
+                <View style={s.unitSelectorContent}>
+                  <View style={s.unitIconCircle}>
+                    <Text style={s.unitIconText}>{toUnit.symbol.slice(0, 2)}</Text>
+                  </View>
+                  <View style={{ marginLeft: 12 }}>
+                    <Text style={[s.unitLabel, { color: C.text }]}>{toUnit.label}</Text>
+                    <Text style={[s.unitSymbol, { color: C.accent }]}>{toUnit.symbol}</Text>
+                  </View>
+                </View>
+                <Text style={[s.chevron, { color: C.textMuted }]}>›</Text>
+              </AnimatedPressable>
+
+              {/* Result */}
+              <View style={[s.resultBox, { borderColor: C.accent }]}>
+                <LinearGradient
+                  colors={C.resultGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={s.resultGradient}
+                >
+                  <Text style={[s.resultLabel, { color: C.accent }]}>Result</Text>
+                  <AnimatedResult
+                    value={resultStr}
+                    unit={toUnit.symbol}
+                    style={[s.resultValue, { color: C.text }]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  />
+                  <Text style={[s.resultEquation, { color: C.textMuted }]}>
+                    {formatNumber(numericInput)} {fromUnit.symbol}  =  {resultStr} {toUnit.symbol}
+                  </Text>
+                  {activeCategory === 'Currency' && (
+                    <Text style={s.rateNote}>
+                      ⚠️ Rates are approximate
+                    </Text>
+                  )}
+                </LinearGradient>
+              </View>
+            </View>
+          </Animated.View>
+
+          {/* Quick reference card */}
+          <Animated.View
+            entering={FadeInDown.springify().damping(14).stiffness(120).delay(100)}
+          >
+            <View style={[s.glassCard, { marginTop: 16 }]}>
+              <Text style={[s.cardTitle, { color: C.text }]}>All {activeCategory} Units</Text>
+              {UNITS_MAP[activeCategory].map((unit, idx) => {
+                const val = convert(numericInput, fromUnit, unit);
+                return (
+                  <Animated.View
+                    key={unit.symbol}
+                    entering={FadeInUp.springify().damping(20).stiffness(150).delay(idx * 30)}
+                    layout={Layout.springify().damping(20)}
+                  >
+                    <View style={[s.referenceRow, { borderBottomColor: C.glassBorder }]}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[s.refLabel, { color: C.text }]}>{unit.label}</Text>
+                        <Text style={[s.refSymbol, { color: C.textMuted }]}>{unit.symbol}</Text>
+                      </View>
+                      <Text style={[s.refValue, { color: C.accent }]}>{formatNumber(val)}</Text>
+                    </View>
+                  </Animated.View>
+                );
+              })}
+            </View>
+          </Animated.View>
+        </ScrollView>
+
+        {/* ── Unit Picker Modal ─────────────────────────────────────────── */}
+        <Modal visible={pickerVisible} animationType="slide" transparent onRequestClose={() => setPickerVisible(false)}>
+          <Pressable style={s.modalOverlay} onPress={() => setPickerVisible(false)}>
+            <Animated.View entering={FadeInUp.springify().damping(20)} style={[s.modalSheet, { backgroundColor: C.card }]}>
+              <Pressable onPress={e => e.stopPropagation()} style={{ flex: 1 }}>
+                <View style={s.modalHandle} />
+                <Text style={[s.modalTitle, { color: C.text }]}>
+                  Select {activeCategory} Unit
+                </Text>
+                <FlatList
+                  data={UNITS_MAP[activeCategory]}
+                  keyExtractor={u => u.symbol}
+                  renderItem={({ item, index }) => {
+                    const isSelected = item.symbol === (pickerTarget === 'from' ? fromUnit : toUnit).symbol;
+                    return (
+                      <AnimatedPressable
+                        style={[
+                          s.pickerRow,
+                          { borderBottomColor: C.glassBorder },
+                          isSelected && { backgroundColor: C.resultBg },
+                        ]}
+                        onPress={() => selectUnit(item)}
+                        haptic={false}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <View style={[s.pickerDot, isSelected && { backgroundColor: C.accent }]} />
+                          <View style={{ marginLeft: 12 }}>
+                            <Text style={[s.pickerLabel, { color: C.text }]}>{item.label}</Text>
+                            <Text style={[s.pickerSymbol, { color: isSelected ? C.accent : C.textMuted }]}>
+                              {item.symbol}
+                            </Text>
+                          </View>
+                        </View>
+                        {isSelected && (
+                          <View style={[s.pickerCheck, { backgroundColor: C.accent }]}>
+                            <Text style={s.pickerCheckText}>✓</Text>
+                          </View>
+                        )}
+                      </AnimatedPressable>
+                    );
+                  }}
+                />
+              </Pressable>
+            </Animated.View>
           </Pressable>
-        </Pressable>
-      </Modal>
-    </View>
+        </Modal>
+
+        {/* ── Favorites Drawer ──────────────────────────────────────────── */}
+        <Modal visible={showFavorites} animationType="slide" transparent onRequestClose={() => setShowFavorites(false)}>
+          <Pressable style={s.modalOverlay} onPress={() => setShowFavorites(false)}>
+            <Animated.View entering={FadeInUp.springify().damping(20)} style={[s.modalSheet, { backgroundColor: C.card }]}>
+              <Pressable onPress={e => e.stopPropagation()} style={{ flex: 1 }}>
+                <View style={s.modalHandle} />
+                <Text style={[s.modalTitle, { color: C.text }]}>⭐ Saved Conversions</Text>
+                {favorites.length === 0 ? (
+                  <Text style={[s.emptyText, { color: C.textMuted }]}>
+                    No favorites yet. Tap ☆ to bookmark a conversion.
+                  </Text>
+                ) : (
+                  <FlatList
+                    data={favorites}
+                    keyExtractor={f => f.id}
+                    renderItem={({ item }) => (
+                      <AnimatedPressable
+                        style={[s.pickerRow, { borderBottomColor: C.glassBorder }]}
+                        onPress={() => loadFavorite(item)}
+                        haptic={false}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={[s.pickerLabel, { color: C.text }]}>
+                            {CATEGORY_ICONS[item.category]}  {item.category}
+                          </Text>
+                          <Text style={[s.pickerSymbol, { color: C.accent }]}>
+                            {item.from}  →  {item.to}
+                          </Text>
+                        </View>
+                        <AnimatedPressable
+                          onPress={() => deleteFavorite(item.id)}
+                          style={s.deleteBtn}
+                          haptic={false}
+                        >
+                          <Text style={{ color: '#EF4444', fontSize: 16, fontWeight: '700' }}>✕</Text>
+                        </AnimatedPressable>
+                      </AnimatedPressable>
+                    )}
+                  />
+                )}
+              </Pressable>
+            </Animated.View>
+          </Pressable>
+        </Modal>
+
+        {/* ── Recent Drawer ─────────────────────────────────────────────── */}
+        <Modal visible={showRecent} animationType="slide" transparent onRequestClose={() => setShowRecent(false)}>
+          <Pressable style={s.modalOverlay} onPress={() => setShowRecent(false)}>
+            <Animated.View entering={FadeInUp.springify().damping(20)} style={[s.modalSheet, { backgroundColor: C.card }]}>
+              <Pressable onPress={e => e.stopPropagation()} style={{ flex: 1 }}>
+                <View style={s.modalHandle} />
+                <Text style={[s.modalTitle, { color: C.text }]}>🕐 Recent Conversions</Text>
+                {recent.length === 0 ? (
+                  <Text style={[s.emptyText, { color: C.textMuted }]}>No recent conversions yet.</Text>
+                ) : (
+                  <FlatList
+                    data={recent}
+                    keyExtractor={r => r.id}
+                    renderItem={({ item }) => (
+                      <AnimatedPressable
+                        style={[s.pickerRow, { borderBottomColor: C.glassBorder }]}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          const units = UNITS_MAP[item.category];
+                          const f = units.find(u => u.symbol === item.from);
+                          const t = units.find(u => u.symbol === item.to);
+                          if (f && t) {
+                            setActiveCategory(item.category);
+                            setTimeout(() => {
+                              setFromUnit(f);
+                              setToUnit(t);
+                              setInputValue(item.inputValue);
+                            }, 50);
+                          }
+                          setShowRecent(false);
+                        }}
+                        haptic={false}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={[s.pickerLabel, { color: C.text }]}>
+                            {CATEGORY_ICONS[item.category]}  {item.inputValue} {item.from}  →  {item.result} {item.to}
+                          </Text>
+                          <Text style={[s.pickerSymbol, { color: C.textMuted }]}>
+                            {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </Text>
+                        </View>
+                      </AnimatedPressable>
+                    )}
+                  />
+                )}
+              </Pressable>
+            </Animated.View>
+          </Pressable>
+        </Modal>
+      </View>
     </SafeAreaView>
   );
 }
 
 // ─── Theme Colors ─────────────────────────────────────────────────────────────
-const LIGHT = {
-  bg: '#f0f4ff',
-  card: '#ffffff',
-  text: '#1a1a2e',
-  textMuted: '#6b7280',
-  accent: '#3b82f6',
-  border: '#e5e7eb',
-  inputBg: '#f9fafb',
-  resultBg: '#eff6ff',
+interface Colors {
+  bg: string;
+  card: string;
+  text: string;
+  textMuted: string;
+  accent: string;
+  border: string;
+  inputBg: string;
+  resultBg: string;
+  headerText: string;
+  headerMuted: string;
+  headerGradient: readonly [string, string, ...string[]];
+  chipGradient: readonly [string, string, ...string[]];
+  resultGradient: readonly [string, string, ...string[]];
+  btnGradient: readonly [string, string, ...string[]];
+  glassInput: string;
+  glassBorder: string;
+}
+
+const LIGHT: Colors = {
+  bg: '#F0EFFA',
+  card: 'rgba(255,255,255,0.72)',
+  text: '#1E1B4B',
+  textMuted: '#64748B',
+  accent: '#6C63FF',
+  border: '#E5E7EB',
+  inputBg: '#F9FAFB',
+  resultBg: 'rgba(108,99,255,0.08)',
+  headerText: '#1E1B4B',
+  headerMuted: '#64748B',
+  headerGradient: ['rgba(108,99,255,0.06)', 'rgba(59,130,246,0.04)'],
+  chipGradient: ['#6C63FF', '#3B82F6', '#06B6D4'],
+  resultGradient: ['rgba(108,99,255,0.06)', 'rgba(6,182,212,0.03)'],
+  btnGradient: ['#6C63FF', '#3B82F6'],
+  glassInput: 'rgba(255,255,255,0.55)',
+  glassBorder: 'rgba(255,255,255,0.35)',
 };
 
-const DARK = {
-  bg: '#0f172a',
-  card: '#1e293b',
-  text: '#f1f5f9',
-  textMuted: '#94a3b8',
-  accent: '#60a5fa',
-  border: '#334155',
-  inputBg: '#0f172a',
-  resultBg: '#1e3a5f',
+const DARK: Colors = {
+  bg: '#08080F',
+  card: 'rgba(255,255,255,0.05)',
+  text: '#F1F5F9',
+  textMuted: '#64748B',
+  accent: '#8B83FF',
+  border: '#1E293B',
+  inputBg: 'rgba(255,255,255,0.04)',
+  resultBg: 'rgba(139,131,255,0.1)',
+  headerText: '#F1F5F9',
+  headerMuted: '#94A3B8',
+  headerGradient: ['rgba(139,131,255,0.08)', 'rgba(59,130,246,0.04)'],
+  chipGradient: ['#7C3AED', '#3B82F6', '#06B6D4'],
+  resultGradient: ['rgba(139,131,255,0.06)', 'rgba(6,182,212,0.02)'],
+  btnGradient: ['#7C3AED', '#3B82F6'],
+  glassInput: 'rgba(255,255,255,0.06)',
+  glassBorder: 'rgba(255,255,255,0.08)',
 };
-
-type Colors = typeof LIGHT;
 
 // ─── Styles Factory ───────────────────────────────────────────────────────────
 function makeStyles(C: Colors) {
   return StyleSheet.create({
     root: { flex: 1 },
-    header: {
-      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-      paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12,
+
+    // Header
+    headerGradient: {
+      paddingTop: 4,
+      paddingBottom: 4,
     },
-    appTitle: { fontSize: 26, fontWeight: '700', letterSpacing: -0.5 },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 20,
+      paddingTop: 8,
+      paddingBottom: 8,
+    },
+    appTitle: {
+      fontSize: 26,
+      fontWeight: '800',
+      letterSpacing: -0.8,
+      color: C.headerText,
+    },
+    appSubtitle: {
+      fontSize: 12,
+      fontWeight: '500',
+      color: C.headerMuted,
+      letterSpacing: 0.2,
+      marginTop: 1,
+    },
     headerActions: { flexDirection: 'row' },
-    headerBtn: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, backgroundColor: 'rgba(59,130,246,0.12)', marginLeft: 8 },
-    headerBtnText: { fontSize: 13, fontWeight: '600' },
+    headerBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 16,
+      backgroundColor: 'rgba(255,255,255,0.5)',
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.6)',
+    },
+    headerBtnIcon: { fontSize: 14, marginRight: 4 },
+    headerBtnText: { fontSize: 12, fontWeight: '600', color: C.headerMuted },
 
     // Tabs
-    tabsScroll: { flexGrow: 0 },
-    tabsContainer: { paddingHorizontal: 12, paddingBottom: 12, flexDirection: 'row' },
-    tab: {
-      alignItems: 'center', justifyContent: 'center',
-      paddingHorizontal: 16, paddingVertical: 9,
-      borderRadius: 20, borderWidth: 1.5, borderColor: 'transparent',
-      backgroundColor: 'rgba(0,0,0,0.06)', marginRight: 8,
+    tabsScroll: { flexGrow: 0, marginTop: 4 },
+    tabsContainer: {
+      paddingHorizontal: 16,
+      paddingBottom: 10,
+      flexDirection: 'row',
     },
-    tabText: { fontSize: 13, fontWeight: '600' },
+    tab: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 2,
+      paddingVertical: 2,
+      borderRadius: 24,
+      marginRight: 8,
+      backgroundColor: 'rgba(255,255,255,0.4)',
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.5)',
+    },
+    tabActive: {
+      borderWidth: 0,
+    },
+    tabGradient: {
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+      borderRadius: 22,
+    },
+    tabText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    tabTextActive: {
+      color: '#FFFFFF',
+    },
 
     // Scroll + Card
-    scrollContent: { paddingHorizontal: 16, paddingBottom: 32 },
-    card: {
-      borderRadius: 16, borderWidth: 1,
-      padding: 16, marginBottom: 0,
+    scrollContent: {
+      paddingHorizontal: 16,
+      paddingBottom: 32,
+      paddingTop: 12,
     },
-    cardTitle: { fontSize: 15, fontWeight: '700', marginBottom: 12 },
+    glassCard: {
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: C.glassBorder,
+      backgroundColor: C.card,
+      padding: 18,
+      shadowColor: '#6C63FF',
+      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.08,
+      shadowRadius: 24,
+      elevation: 6,
+    },
+    cardTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      marginBottom: 14,
+      letterSpacing: -0.3,
+    },
 
     // Converter
-    sectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 6, marginTop: 4 },
+    sectionLabel: {
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 1.2,
+      marginBottom: 6,
+      marginTop: 4,
+    },
     unitSelector: {
-      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-      borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: C.glassBorder,
+      padding: 14,
+      marginBottom: 10,
+    },
+    unitSelectorContent: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    unitIconCircle: {
+      width: 42,
+      height: 42,
+      borderRadius: 12,
+      backgroundColor: 'rgba(108,99,255,0.1)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    unitIconText: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: C.accent,
     },
     unitLabel: { fontSize: 16, fontWeight: '600' },
-    unitSymbol: { fontSize: 12, fontWeight: '500', marginTop: 2 },
-    chevron: { fontSize: 26, fontWeight: '300' },
+    unitSymbol: { fontSize: 12, fontWeight: '500', marginTop: 2, opacity: 0.8 },
+    chevron: { fontSize: 24, fontWeight: '300' },
+
+    // Input
+    inputWrapper: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: C.glassBorder,
+      paddingHorizontal: 14,
+      marginBottom: 10,
+    },
+    inputPrefix: {
+      fontSize: 18,
+      marginRight: 10,
+    },
     input: {
-      borderRadius: 12, borderWidth: 1, padding: 14,
-      fontSize: 22, fontWeight: '600', marginBottom: 12,
+      flex: 1,
+      paddingVertical: 14,
+      fontSize: 22,
+      fontWeight: '600',
     },
-    actionsRow: { flexDirection: 'row', marginBottom: 12 },
+    actionsRow: { flexDirection: 'row', marginBottom: 10 },
     actionBtn: {
-      flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center',
-      borderWidth: 1, borderColor: 'transparent', marginRight: 10,
+      flex: 1,
+      borderRadius: 14,
+      overflow: 'hidden',
     },
-    actionBtnLast: {
-      flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center',
-      borderWidth: 1, borderColor: 'transparent',
+    actionBtnGradient: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 12,
     },
-    actionBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+    actionBtnInner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 12,
+    },
+    actionBtnInnerFav: {
+      borderRadius: 14,
+    },
+    actionBtnFav: {
+      borderWidth: 1.5,
+      borderColor: 'rgba(252,211,77,0.3)',
+      backgroundColor: 'rgba(252,211,77,0.08)',
+    },
+    actionBtnIcon: { fontSize: 16, marginRight: 6, fontWeight: '700' },
+    actionBtnText: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
 
     // Result
     resultBox: {
-      borderRadius: 14, borderWidth: 1.5, padding: 16, marginTop: 8,
+      borderRadius: 16,
+      borderWidth: 1.5,
+      overflow: 'hidden',
+      marginTop: 8,
     },
-    resultLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 4 },
-    resultValue: { fontSize: 32, fontWeight: '800', letterSpacing: -1, marginBottom: 4 },
-    resultEquation: { fontSize: 12, marginTop: 2 },
-    rateNote: { fontSize: 11, marginTop: 8, fontStyle: 'italic' },
+    resultGradient: {
+      padding: 18,
+    },
+    resultLabel: {
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 1.2,
+      marginBottom: 4,
+    },
+    resultValue: {
+      fontSize: 34,
+      fontWeight: '800',
+      letterSpacing: -1,
+      marginBottom: 4,
+    },
+    resultEquation: {
+      fontSize: 12,
+      marginTop: 2,
+      fontWeight: '500',
+    },
+    rateNote: {
+      fontSize: 11,
+      marginTop: 8,
+      fontStyle: 'italic',
+      color: '#94A3B8',
+    },
 
     // Reference list
     referenceRow: {
-      flexDirection: 'row', alignItems: 'center',
-      paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth,
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
     },
     refLabel: { fontSize: 14, fontWeight: '500' },
-    refSymbol: { fontSize: 11, marginTop: 1 },
+    refSymbol: { fontSize: 11, marginTop: 1, opacity: 0.7 },
     refValue: { fontSize: 15, fontWeight: '700' },
 
     // Modal
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-    modalSheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 12, maxHeight: '75%' },
-    modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#94a3b8', alignSelf: 'center', marginBottom: 12 },
-    modalTitle: { fontSize: 17, fontWeight: '700', paddingHorizontal: 20, marginBottom: 12 },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      justifyContent: 'flex-end',
+    },
+    modalSheet: {
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      paddingTop: 12,
+      maxHeight: '75%',
+      borderWidth: 1,
+      borderColor: C.glassBorder,
+    },
+    modalHandle: {
+      width: 40,
+      height: 5,
+      borderRadius: 3,
+      backgroundColor: '#94A3B8',
+      alignSelf: 'center',
+      marginBottom: 14,
+      opacity: 0.5,
+    },
+    modalTitle: {
+      fontSize: 18,
+      fontWeight: '700',
+      paddingHorizontal: 24,
+      marginBottom: 12,
+    },
     pickerRow: {
-      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-      paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 24,
+      paddingVertical: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    pickerDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: 'transparent',
+    },
+    pickerCheck: {
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    pickerCheckText: {
+      color: '#FFFFFF',
+      fontSize: 14,
+      fontWeight: '800',
     },
     pickerLabel: { fontSize: 15, fontWeight: '500' },
-    pickerSymbol: { fontSize: 13, fontWeight: '600' },
+    pickerSymbol: { fontSize: 13, fontWeight: '600', marginTop: 1 },
     deleteBtn: { padding: 8 },
-    emptyText: { padding: 24, textAlign: 'center', fontSize: 14 },
+    emptyText: { padding: 32, textAlign: 'center', fontSize: 14, lineHeight: 20 },
   });
 }
